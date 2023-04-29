@@ -12,14 +12,17 @@ object Implementation extends Template {
     // type scheme
     type TypeScheme = (Type, List[VarT])
 
-    // type environment
-    type TypeEnv = Map[String, Any]
+    // type name
+    case class TypeName(name: String)
 
-    def lookupTenv(x: String, tenv: TypeEnv) = tenv.getOrElse(x, error(s"free identifier: $x"))
+    // type environment
+    type TypeEnv = Map[Any, Any]
+
+    def lookupTenv(x: Any, tenv: TypeEnv) = tenv.getOrElse(x, error(s"free identifier: $x"))
 
     def substitute(unsubstitutedType: Type, substituteMap: Map[String, Type]): Type = unsubstitutedType match {
       case IntT | BooleanT | UnitT => unsubstitutedType
-      case ArrowT(ptypes, rt) => ArrowT(ptypes.map(ptype => substitute(ptype, substituteMap)), substitute(rt, substituteMap))
+      case ArrowT(ptypes, rt) => ArrowT(ptypes.map(substitute(_, substituteMap)), substitute(rt, substituteMap))
       case AppT(x, targs) => AppT(x, targs.map(substitute(_, substituteMap)))
       case VarT(x) => substituteMap.getOrElse(x, unsubstitutedType)
     }
@@ -32,6 +35,7 @@ object Implementation extends Template {
     def isSame(left: Type, right: Type): Boolean =
       (left, right) match {
         case (IntT, IntT) | (BooleanT, BooleanT) | (UnitT, UnitT) => true
+        case (VarT(x), VarT(y)) => x == y
         case (AppT(_, targs1), AppT(_, targs2)) => (targs1.length == targs2.length) &&
           (targs1 zip targs2).foldLeft(true){(boolAcc, paramsPair) => boolAcc && isSame(paramsPair._1, paramsPair._2)}
         case (ArrowT(p1, r1), ArrowT(p2, r2)) =>
@@ -45,15 +49,15 @@ object Implementation extends Template {
 
     def wellFormedCheck(t: Type, tenv: TypeEnv): Type = t match {
       case AppT(name, targs) => 
-        targs.foreach(ti => wellFormedCheck(ti, tenv))
-        tenv.getOrElse(name, notype(s"$name is a free identifier")) match {
-          case TypeDef(_, tparams, _) => if (tparams != targs.length) error("wrong arity") else t
+        targs.foreach(wellFormedCheck(_, tenv))
+        lookupTenv(TypeName(name), tenv) match {
+          case TypeDef(_, tparams, _) => if (tparams.length != targs.length) error("wrong arity") else t
           case _ => error("invalid type")
         }
-      case VarT(name) => if (tenv.contains(name)) t else notype(s"$name is a free identifier")
+      case VarT(name) => if (tenv.contains(t)) t else notype(s"$t is a free identifier")
       case IntT | BooleanT | UnitT => t
       case ArrowT(ptypes, rtype) =>
-        ptypes.foreach(ti => wellFormedCheck(ti, tenv))
+        ptypes.foreach(wellFormedCheck(_, tenv))
         wellFormedCheck(rtype, tenv)
         t
     }
@@ -64,16 +68,16 @@ object Implementation extends Template {
         mustSame(lt, typeCheck(e, tenv))
         t
       case RecFun(x, tparams, params, rt, b) =>
-        tparams.foreach(ti => if (tenv.contains(ti)) error(s"$ti must not be in tenv"))
-        val tenv0 = tparams.foldLeft(tenv){(tenvPrev, ti) => tenvPrev + (ti -> VarT(ti))}
+        tparams.foreach(ti => if (tenv.contains(VarT(ti))) error(s"$ti must not be in tenv"))
+        val tenv0 = tparams.foldLeft(tenv){(tenvPrev, ti) => tenvPrev + (VarT(ti) -> None)}
         params.foreach(param => wellFormedCheck(param._2, tenv0))
         wellFormedCheck(rt, tenv0)
-        val tenvN = params.foldLeft(tenv0){(tenvPrev, param) => tenvPrev + (param._1 -> ((param._2, Nil), false))}
-        mustSame(rt, typeCheck(b, tenvN))
+        val tenvM = params.foldLeft(tenv0){(tenvPrev, param) => tenvPrev + (param._1 -> ((param._2, Nil), false))}
+        mustSame(rt, typeCheck(b, tenvM))
         t
       case TypeDef(name, tparams, variants) =>
-        tparams.foreach(ti => if (tenv.contains(ti)) error(s"$ti must not be in tenv"))
-        val tenvN = tparams.foldLeft(tenv){(tenvPrev, ti) => tenvPrev + (ti -> VarT(ti))}
+        tparams.foreach(ti => if (tenv.contains(VarT(ti))) error(s"$ti must not be in tenv"))
+        val tenvN = tparams.foldLeft(tenv){(tenvPrev, ti) => tenvPrev + (VarT(ti) -> None)}
         variants.foreach(wi => wi.params.foreach(ti => wellFormedCheck(ti, tenvN)))
         t
     }
@@ -94,8 +98,8 @@ object Implementation extends Template {
 
     def typeCheck(expr: Expr, tenv: TypeEnv): Type = expr match {
       case Id(name, targs) =>
-        targs.foreach(ti => wellFormedCheck(ti, tenv))
-        tenv.getOrElse(name, notype(s"$name is a free identifier")) match {
+        targs.foreach(wellFormedCheck(_, tenv))
+        lookupTenv(name, tenv) match {
           case typeSchemeWithMut: (TypeScheme, Boolean) => if (typeSchemeWithMut._1._2.length != targs.length) error("wrong arity") else substitute(typeSchemeWithMut._1._1, (typeSchemeWithMut._1._2.map(_.name) zip targs).toMap)
           case _ => error("invalid type")
         }
@@ -145,9 +149,9 @@ object Implementation extends Template {
           val tenvI = di match {
             case Lazy(x, t, e) => Map(x -> ((t, Nil), false))
             case RecFun(x, tparams, params, rt, b) => Map(x -> ((ArrowT(params.map(_._2), rt), tparams.map(VarT(_))), false))
-            case typeDef @ TypeDef(name, tparams, variants) => if (tenv.contains(name)) error(s"$name must not be in the domain of initial tenv") else {
+            case typeDef @ TypeDef(name, tparams, variants) => if (tenv.contains(TypeName(name))) error(s"$name must not be in the domain of initial tenv") else {
               val tvars = tparams.map(VarT(_))
-              variants.foldLeft(Map(name -> typeDef): TypeEnv){(genvPrev, wi) =>
+              variants.foldLeft(Map(TypeName(name) -> typeDef): TypeEnv){(genvPrev, wi) =>
                 if (wi.params.length == 0) genvPrev + (wi.name -> ((AppT(name, tvars), tvars), false)) else genvPrev + (wi.name -> ((ArrowT(wi.params, AppT(name, tvars)), tvars), false))
               }
             }
@@ -176,7 +180,7 @@ object Implementation extends Template {
         case _ => error("must be a function type")
       }
       case Match(e, cases) => typeCheck(e, tenv) match {
-        case AppT(x, targs) => lookupTenv(x, tenv) match {
+        case AppT(x, targs) => lookupTenv(TypeName(x), tenv) match {
           case TypeDef(x, tparams, variants) => if (targs.length != tparams.length || variants.length != cases.length) error("wrong arity") else {
             cases.foldLeft(typeCheck(cases(0), tenv, variants, tparams, targs)){(accType, elem) => mustSame(accType, typeCheck(elem, tenv, variants, tparams, targs))}
           }
