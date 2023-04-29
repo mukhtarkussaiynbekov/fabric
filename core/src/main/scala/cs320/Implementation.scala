@@ -277,14 +277,14 @@ object Implementation extends Template {
         val envN = defs.foldLeft(envEmpty){(envPrev, di) => 
           val envi = di match {
             case Lazy(x, e) =>
-              val naddr = malloc(sto, envPrev)
+              val naddr = malloc(sto, envPrev ++ env)
               envEmpty + (x -> naddr)
             case RecFun(x, params, b) => 
-              val naddr = malloc(sto, envPrev)
+              val naddr = malloc(sto, envPrev ++ env)
               envEmpty + (x -> naddr)
             case TypeDef(variants) =>
               variants.foldLeft(envEmpty){(envarPrev, wi) =>
-                val naddr = malloc(sto, envPrev ++ envarPrev)
+                val naddr = malloc(sto, envPrev ++ envarPrev ++ env)
                 envarPrev + (wi.name -> naddr)
               }
           }
@@ -314,21 +314,19 @@ object Implementation extends Template {
         (UnitV, es + (addr -> ev))
       case App(f, args) =>
         val (fv, fs) = interp(f, env, sto)
+        val (evals, stoN) = args.foldLeft((List[Value](), fs)){(acc, e) => 
+          val (ev, es) = interp(e, env, acc._2)
+          (acc._1 ++ List[Value](ev), es)
+        }
         fv match {
           case CloV(params, b, fenv) => if (params.length != args.length) error("wrong arity") else {
-            val (nenv, nsto) = (params zip args).foldLeft((fenv, fs)){(acc, elem) =>
-              val ai = malloc(acc._2)
-              val (eiv, eis) = interp(elem._2, acc._1, acc._2)
-              (acc._1 + (elem._1 -> ai), eis + (ai -> eiv))
+            val (nenv, nsto) = (params zip evals).foldLeft((fenv, stoN)){(acc, elem) =>
+              val ai = malloc(acc._2, acc._1 ++ env)
+              (acc._1 + (elem._1 -> ai), acc._2 + (ai -> elem._2))
             }
             interp(b, nenv, nsto)
           }
-          case ConstructorV(x) => 
-            val (vals, nsto) = args.foldLeft((List[Value](), sto)){(acc, ei) => 
-              val (eiv, eis) = interp(ei, env, acc._2)
-              (acc._1 ++ List[Value](eiv), eis)
-            }
-            (VariantV(x, vals), nsto)
+          case ConstructorV(x) => (VariantV(x, evals), stoN)
         }
       case Match(e, cases) =>
         val (ev, es) = interp(e, env, sto)
@@ -347,7 +345,7 @@ object Implementation extends Template {
                 interp(c.body, nenv, nsto)
               }
             }
-          case _ => error("must be a variant")
+          case v => error(s"$v must be a variant")
         }
     }
 
