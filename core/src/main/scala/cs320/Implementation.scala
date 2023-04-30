@@ -196,6 +196,8 @@ object Implementation extends Template {
   object U {
     import Untyped._
 
+    // Copied the following functions from x-fiber implementation
+
     def numVop(op: (BigInt, BigInt) => BigInt, excludeZero: Boolean): (Value, Value) => IntV = (_,_) match {
       case (IntV(x), IntV(y)) => if (excludeZero && y == 0) error(s"second argument is zero") else IntV(op(x,y))
       case (x, y) => error(s"not both numbers: $x, $y")
@@ -225,12 +227,11 @@ object Implementation extends Template {
     def interp(expr: Expr, env: Env, sto: Store): (Value, Store) = expr match {
       case Id(x) =>
         val addr = lookupEnv(x, env)
-        val v = lookupStore(addr, sto)
-        v match {
+        lookupStore(addr, sto) match {
           case ExprV(le, lenv) =>
             val (lv, ls) = interp(le, lenv, sto)
             (lv, ls + (addr -> lv))
-          case _ => (v, sto)
+          case v => (v, sto)
         }
       case IntE(n) => (IntV(n), sto)
       case BooleanE(b) => (BooleanV(b), sto)
@@ -260,7 +261,7 @@ object Implementation extends Template {
         val (rv, rs) = interp(r, env, ls)
         (intVLt(lv, rv), rs)
       case Sequence(l, r) =>
-        val (lv, ls) = interp(l, env, sto)
+        val (_, ls) = interp(l, env, sto)
         interp(r, env, ls)
       case If(c, t, f) =>
         val (cv, cs) = interp(c, env, sto)
@@ -269,9 +270,9 @@ object Implementation extends Template {
           case _ => error("condition must result in a boolean")
         }
       case Val(x, e, b) =>
-        val (ev, s) = interp(e, env, sto)
-        val nAddr = malloc(sto)
-        interp(b, env + (x -> nAddr), s + (nAddr -> ev))
+        val (ev, es) = interp(e, env, sto)
+        val nAddr = malloc(es)
+        interp(b, env + (x -> nAddr), es + (nAddr -> ev))
       case RecBinds(defs, b) =>
         val envEmpty: Env = Map()
         val envN = defs.foldLeft(envEmpty){(envPrev, di) => 
